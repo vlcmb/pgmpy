@@ -1342,17 +1342,19 @@ class DAG(_GraphRolesMixin, nx.DiGraph):
 
         return daft_pgm
 
+ 
     @staticmethod
     def get_random(
-        n_nodes=5,
-        edge_prob=0.5,
+        n_nodes: int = 5,
+        edge_prob: float = 0.5,
         node_names: Optional[list[Hashable]] = None,
-        latents=False,
+        latents: bool = False,
         seed: Optional[int] = None,
+        method: str = "erdos",
+        **kwargs,
     ) -> "DAG":
         """
-        Returns a randomly generated DAG with `n_nodes` number of nodes with
-        edge probability being `edge_prob`.
+        Returns a randomly generated DAG using different generation strategies.
 
         Parameters
         ----------
@@ -1360,55 +1362,107 @@ class DAG(_GraphRolesMixin, nx.DiGraph):
             The number of nodes in the randomly generated DAG.
 
         edge_prob: float
-            The probability of edge between any two nodes in the topologically
-            sorted DAG.
+            The probability of edge between any two nodes (used by some methods).
 
         node_names: list (default: None)
-            A list of variables names to use in the random graph.
-            If None, the node names are integer values starting from 0.
+            A list of variable names to use in the random graph.
+            If None, nodes are labeled X_0, X_1, ...
 
         latents: bool (default: False)
             If True, includes latent variables in the generated DAG.
 
         seed: int (default: None)
-            The seed for the random number generator.
+            Random seed for reproducibility.
+
+        method: str
+            Generation strategy. One of:
+            {"erdos", "spanning_tree", "preferential", "layered"}.
+
+        Additional kwargs
+        -----------------
+        For specific methods:
+            - method="preferential": m (int, default=2) number of parents per new node.
+            - method="layered": n_layers (int), layer_conn_prob (float)
 
         Returns
         -------
-        Random DAG: pgmpy.base.DAG
-            The randomly generated DAG.
-
-        Examples
-        --------
-        >>> from pgmpy.base import DAG
-        >>> random_dag = DAG.get_random(n_nodes=10, edge_prob=0.3)
-        >>> random_dag.nodes()
-        NodeView((0, 1, 2, 3, 4, 5, 6, 7, 8, 9))
-        >>> random_dag.edges()
-        OutEdgeView([(0, 6), (1, 6), (1, 7), (7, 9), (2, 5), (2, 7), (2, 8), (5, 9), (3, 7)])
+        Random DAG : pgmpy.base.DAG
         """
-        # Step 1: Generate a matrix of 0 and 1. Prob of choosing 1 = edge_prob
-        gen = np.random.default_rng(seed=seed)
-        adj_mat = gen.choice(
-            [0, 1], size=(n_nodes, n_nodes), p=[1 - edge_prob, edge_prob]
-        )
-
-        # Step 2: Use the upper triangular part of the matrix as adjacency.
+        rng = np.random.default_rng(seed)
         if node_names is None:
-            node_names = list([f"X_{i}" for i in range(n_nodes)])
+            node_names = [f"X_{i}" for i in range(n_nodes)]
 
-        adj_pd = pd.DataFrame(
-            np.triu(adj_mat, k=1), columns=node_names, index=node_names
-        )
-        nx_dag = nx.from_pandas_adjacency(adj_pd, create_using=nx.DiGraph)
+        # ---- ERDŐS–RÉNYI STYLE DAG ----
+        if method == "erdos":
+            adj = rng.choice([0, 1], size=(n_nodes, n_nodes), p=[1 - edge_prob, edge_prob])
+            adj = np.triu(adj, k=1)  # ensure acyclicity
+            adj_pd = pd.DataFrame(adj, columns=node_names, index=node_names)
+            nx_dag = nx.from_pandas_adjacency(adj_pd, create_using=nx.DiGraph)
 
+        # ---- CONNECTED DAG VIA SPANNING TREE + NOISE ----
+        elif method == "spanning_tree":
+            order = rng.permutation(node_names)
+            adj = np.zeros((n_nodes, n_nodes), dtype=int)
+
+            # First, a directed spanning tree (acyclic)
+            for i in range(1, n_nodes):
+                parent = rng.integers(0, i)
+                adj[parent, i] = 1  # edge along order
+
+            # Add extra edges probabilistically (preserve DAG)
+            extra = rng.random((n_nodes, n_nodes)) < edge_prob
+            adj = np.triu(np.logical_or(adj, extra), 1).astype(int)
+
+            adj_pd = pd.DataFrame(adj, columns=order, index=order)
+            nx_dag = nx.from_pandas_adjacency(adj_pd, create_using=nx.DiGraph)
+
+        # ---- DIRECTED PREFERENTIAL ATTACHMENT ----
+        elif method == "preferential":
+            m = kwargs.get("m", 2)
+            G = nx.DiGraph()
+            G.add_nodes_from(node_names)
+            for new_idx in range(1, n_nodes):
+                existing = list(range(new_idx))
+                probs = np.array([G.in_degree(node_names[i]) + 1 for i in existing])
+                probs = probs / probs.sum()
+                n_parents = min(m, new_idx)
+                parents = rng.choice(existing, size=n_parents, replace=False, p=probs)
+                for p in parents:
+                    G.add_edge(node_names[p], node_names[new_idx])
+            nx_dag = G
+
+        # ---- LAYERED DAG ----
+        elif method == "layered":
+            n_layers = kwargs.get("n_layers", int(np.sqrt(n_nodes)))
+            layer_conn_prob = kwargs.get("layer_conn_prob", edge_prob)
+
+            layers = [[] for _ in range(n_layers)]
+            for node in node_names:
+                l = rng.integers(0, n_layers)
+                layers[l].append(node)
+
+            G = nx.DiGraph()
+            G.add_nodes_from(node_names)
+
+            for i in range(n_layers - 1):
+                src = layers[i]
+                for j in range(i + 1, n_layers):
+                    tgt = layers[j]
+                    for u in src:
+                        for v in tgt:
+                            if rng.random() < layer_conn_prob:
+                                G.add_edge(u, v)
+            nx_dag = G
+
+        else:
+            raise ValueError(f"Unknown DAG generation method '{method}'")
+
+        # ---- Add latent nodes optionally ----
         dag = DAG(nx_dag)
-        dag.add_nodes_from(node_names)
-
         if latents:
-            dag.latents = set(
-                gen.choice(dag.nodes(), gen.integers(low=0, high=len(dag.nodes())))
-            )
+            n_latents = rng.integers(low=1, high=max(2, len(dag.nodes())))
+            dag.latents = set(rng.choice(list(dag.nodes()), n_latents, replace=False))
+
         return dag
 
     def to_graphviz(self, plot_edge_strength=False):

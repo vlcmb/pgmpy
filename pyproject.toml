@@ -35,6 +35,9 @@ dependencies = [
   "joblib>=1.2",
   "opt_einsum>=3.3",
   "scikit-base>=0.12.4",
+  "matplotlib>=3.10.7",
+  "pygraphviz",
+  "daft-pgm>=0.1.4",
 ]
 
 [project.optional-dependencies]

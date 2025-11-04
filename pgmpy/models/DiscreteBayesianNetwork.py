@@ -32,6 +32,7 @@ from pgmpy.factors.discrete import (
 from pgmpy.global_vars import logger
 from pgmpy.models.DiscreteMarkovNetwork import DiscreteMarkovNetwork
 from pgmpy.utils import compat_fns
+from typing import List
 
 
 class DiscreteBayesianNetwork(DAG):
@@ -1205,6 +1206,8 @@ class DiscreteBayesianNetwork(DAG):
         n_states: Optional[Union[int, Dict[Hashable, int]]] = None,
         latents: bool = False,
         seed: Optional[int] = None,
+        method: str = "erdos",
+        **kwargs,
     ) -> "DiscreteBayesianNetwork":
         """
         Returns a randomly generated Bayesian Network on `n_nodes` variables
@@ -1276,6 +1279,8 @@ class DiscreteBayesianNetwork(DAG):
             node_names=node_names,
             latents=latents,
             seed=seed,
+            method = method,
+            **kwargs,
         )
         bn_model = DiscreteBayesianNetwork(dag.edges(), latents=dag.latents)
         bn_model.add_nodes_from(dag.nodes())
@@ -1343,6 +1348,29 @@ class DiscreteBayesianNetwork(DAG):
             self.add_cpds(*cpds)
         else:
             return cpds
+
+    def to_nl(
+        self, n_round: int = 4, minimalist: bool = False, random_minimalist: bool = True
+    ) -> str:
+        """
+        Converts the entire Bayesian Network into a Natural Language description.
+        
+        It iterates over each node and calls its CPD's .to_NL() method.
+        """
+        full_description = []
+        full_description.append("=" * 40)
+
+        for cpd in self.get_cpds():
+            
+            # Call the appropriate .to_NL() method (base or override)
+            node_nl_lines = cpd.to_nl(
+                n_round=n_round,
+                minimalist=minimalist,
+                random_minimalist=random_minimalist
+            )
+            full_description.extend(node_nl_lines)
+        
+        return " \n".join(full_description)
 
     def do(
         self, nodes: Union[Hashable, List[Hashable]], inplace: bool = False

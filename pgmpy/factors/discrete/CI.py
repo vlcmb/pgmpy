@@ -1,6 +1,7 @@
 import numpy as np
 from itertools import product
 from pgmpy.factors.discrete import TabularCPD
+from typing import List
 
 
 class BinaryInfluenceModel(TabularCPD):
@@ -126,6 +127,40 @@ class BinaryInfluenceModel(TabularCPD):
 
         return np.array([1 - p_active, p_active])
 
+    def to_nl(self, n_round: int = 4, **kwargs) -> List[str]:
+        """
+        Converts the BinaryInfluenceModel into a sparse Natural Language description.
+        """
+        descriptions = []
+        model_type = f"Noisy-{self.mode.upper()}"
+        active_state = repr(self.state_names[self.variable][1]) # e.g., 'True' or '1'
+        
+        # 1. Base description
+        base_desc = (
+            f"The variable {self.variable} is a {model_type} model of its parents "
+            f"({', '.join(self.evidence)})."
+        )
+        descriptions.append(base_desc)
+
+        # 2. Parameter descriptions
+        for parent, prob in zip(self.evidence, self.activation_magnitude):
+            parent_active = repr(self.state_names[parent][1])
+            prob_rounded = round(prob, n_round)
+            descriptions.append(
+                f"  - The influence of {parent} = {parent_active} (when others are inactive) "
+                f"is {prob_rounded} (probability of {self.variable} = {active_state})."
+            )
+
+        # 3. Leak description
+        if self.isleaky:
+            leak_prob = round(self.leak[0], n_round)
+            descriptions.append(
+                f"  - The leak probability (when all parents are inactive) "
+                f"is {leak_prob} (probability of {self.variable} = {active_state})."
+            )
+        
+        return descriptions
+
 
 class MultilevelInfluenceModel(TabularCPD):
     """
@@ -225,3 +260,53 @@ class MultilevelInfluenceModel(TabularCPD):
         probs = np.diff(np.concatenate(([0.0], cum_prob)))
         probs = np.clip(probs, 0, 1)
         return probs / probs.sum()
+
+    def multilevel_ci_to_nl(self, n_round: int = 4, **kwargs) -> List[str]:
+        """
+        Converts the MultilevelInfluenceModel into a sparse Natural Language description.
+        """
+        descriptions = []
+        model_type = f"Noisy-{self.mode.upper()}"
+        child_states = self.state_names[self.variable]
+        
+        # 1. Base description
+        base_desc = (
+            f"The variable {self.variable} is a {model_type} model of its parents "
+            f"({', '.join(self.evidence)})."
+        )
+        descriptions.append(base_desc)
+
+        # 2. Parameter descriptions (influence tables)
+        for parent in self.evidence:
+            parent_states = self.state_names[parent]
+            for state in parent_states:
+                probs = self.influence_tables[parent][state]
+                
+                # Skip describing "inactive" states (which are just P(X=0)=1.0)
+                if np.isclose(probs[0], 1.0) and np.allclose(probs[1:], 0.0):
+                    continue
+                    
+                prob_parts = []
+                for i, prob in enumerate(probs):
+                    if prob > 1e-6: # Only show non-zero probabilities
+                        prob_rounded = round(prob, n_round)
+                        prob_parts.append(f"P({self.variable}={repr(child_states[i])})={prob_rounded}")
+                
+                prob_desc = ", ".join(prob_parts)
+                descriptions.append(
+                    f"  - The influence of {parent} = {repr(state)} (when others are inactive) is: [{prob_desc}]."
+                )
+
+        # 3. Leak description
+        if self.isleaky:
+            prob_parts = []
+            for i, prob in enumerate(self.leak):
+                if prob > 1e-6:
+                    prob_rounded = round(prob, n_round)
+                    prob_parts.append(f"P({self.variable}={repr(child_states[i])})={prob_rounded}")
+            prob_desc = ", ".join(prob_parts)
+            descriptions.append(
+                f"  - The leak distribution (when all parents are inactive) is: [{prob_desc}]."
+            )
+        
+        return descriptions

@@ -15,6 +15,8 @@ from pgmpy.extern import tabulate
 from pgmpy.factors.discrete import DiscreteFactor
 from pgmpy.global_vars import logger
 from pgmpy.utils import compat_fns
+from typing import List
+import random
 
 
 class TabularCPD(DiscreteFactor):
@@ -150,6 +152,8 @@ class TabularCPD(DiscreteFactor):
                 raise ValueError(
                     "Length of evidence_card doesn't match length of evidence"
                 )
+
+        self.evidence = evidence
 
         if config.BACKEND == "numpy":
             values_casted = np.array(object=values, dtype=config.get_dtype())
@@ -409,10 +413,75 @@ class TabularCPD(DiscreteFactor):
         )
         return df_with_prob_rowsum_to_1
 
+    def to_nl(
+    self, n_round: int = 4, minimalist: bool = False, random_minimalist: bool = True
+) -> List[str]:
+        """
+        Converts the full TabularCPD into a Natural Language description.
+
+        This method is robust for both root nodes (no parents) and
+        conditional nodes (with parents).
+        """
+        descriptions = []
+        
+        # 1. Prepare iterables for evidence and parent state combinations
+        #    This is the key fix to avoid the 'None is not iterable' error.
+        
+        if self.evidence:
+            # Node has parents
+            parent_vars = self.evidence
+            parent_states = [self.state_names[parent] for parent in parent_vars]
+            parent_combos = list(product(*parent_states))
+        else:
+            # Root node (no parents)
+            parent_vars = []      # Use an empty list for zipping
+            parent_combos = [()]  # Use a single empty tuple to run the loop once
+            
+        child_states = self.state_names[self.variable]
+        probs_table = self.get_values()
+
+        # 2. Iterate over each column in the CPT
+        for i, combo in enumerate(parent_combos):
+            
+            # --- Build Conditional Part ---
+            # This is now safe. zip([], ()) returns an empty iterator.
+            cond_parts = [
+                f"{var} = {repr(val)}" for var, val in zip(parent_vars, combo)
+            ]
+            cond_desc = " and ".join(cond_parts)
+
+            # --- Build Probability Part ---
+            probs_col = probs_table[:, i]
+            prob_list = []
+            for j, state in enumerate(child_states):
+                prob = round(probs_col[j], n_round)
+                prob_list.append((state, prob))
+
+            if minimalist and len(prob_list) > 1:
+                # Omit one redundant probability (since they sum to 1)
+                drop_i = 0
+                if random_minimalist:
+                    drop_i = random.randint(0, len(prob_list) - 1)
+                prob_list.pop(drop_i)
+
+            prob_text = " and ".join(
+                f"the probability of {self.variable} = {repr(val)} is {prob}"
+                for val, prob in prob_list
+            )
+
+            # --- Combine Parts ---
+            if cond_desc:
+                # For conditional nodes, cond_desc will be non-empty
+                descriptions.append(f"If {cond_desc}, then {prob_text}.")
+            else:
+                # For root nodes, cond_desc will be empty
+                descriptions.append(f"{prob_text}.")
+                
+        return descriptions
+
     def copy(self):
         """
         Returns a copy of the `TabularCPD` object.
-
         Examples
         --------
         >>> from pgmpy.factors.discrete import TabularCPD
@@ -429,11 +498,9 @@ class TabularCPD(DiscreteFactor):
         >>> copy.variable_card
         2
         >>> copy.values
-        array([[[0.7, 0.6],
-                [0.6, 0.2]],
+        array([[[0.7, 0.6], [0.6, 0.2]],
         <BLANKLINE>
-               [[0.3, 0.4],
-                [0.4, 0.8]]])
+        [[0.3, 0.4],[0.4, 0.8]]])
         """
         evidence = self.variables[1:] if len(self.variables) > 1 else None
         evidence_card = self.cardinality[1:] if len(self.variables) > 1 else None
